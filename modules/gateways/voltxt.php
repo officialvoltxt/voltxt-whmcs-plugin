@@ -247,10 +247,8 @@ function createDynamicPayment($params, $apiClient)
     $existingSession = getExistingDynamicSession($invoiceId, $network, $params);
     
     if ($existingSession && !isDynamicSessionExpired($existingSession)) {
-        // Use existing valid session, but ensure URL uses app domain
-        $paymentUrl = $existingSession['payment_url'];
-        $paymentUrl = str_replace('api.voltxt.io', 'app.voltxt.io', $paymentUrl);
-        return $paymentUrl;
+        // Use existing valid session - return URL as-is from API
+        return $existingSession['payment_url'];
     }
     
     // Clear any old session data
@@ -261,7 +259,7 @@ function createDynamicPayment($params, $apiClient)
     
     if (isset($response['success']) && $response['success']) {
         $sessionData = $response['data'];
-        $paymentUrl = $sessionData['payment_url'];
+        $paymentUrl = $sessionData['payment_url']; // Use URL as returned by API
         $sessionId = $sessionData['session_id'];
         
         // Store session data
@@ -388,7 +386,7 @@ function storeDynamicSessionData($invoiceId, $sessionData, $network)
     try {
         $dynamicData = [
             'session_id' => $sessionData['session_id'],
-            'payment_url' => $sessionData['payment_url'],
+            'payment_url' => $sessionData['payment_url'], // Store URL as returned by API
             'status_check_url' => $sessionData['status_check_url'],
             'network' => $network,
             'amount_sol' => $sessionData['amount_sol'],
@@ -403,12 +401,6 @@ function storeDynamicSessionData($invoiceId, $sessionData, $network)
         
         // Store as serialized data in admin-only notes
         $serializedData = base64_encode(serialize($dynamicData));
-        
-        // Ensure payment URL uses app domain
-        if (isset($dynamicData['payment_url'])) {
-            $dynamicData['payment_url'] = str_replace('api.voltxt.io', 'app.voltxt.io', $dynamicData['payment_url']);
-            $serializedData = base64_encode(serialize($dynamicData));
-        }
         
         $currentAdminNotes = Capsule::table('tblinvoices')
             ->where('id', $invoiceId)
