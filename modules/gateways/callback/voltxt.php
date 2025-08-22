@@ -1,343 +1,338 @@
 <?php
 /**
- * VOLTXT Webhook Callback Handler for WHMCS
+ * Voltxt Solana Payment Gateway - Callback Handler
+ * Handles webhooks and API connection testing
  *
- * This file handles incoming webhook notifications from VOLTXT
- * when payment status changes occur for both dynamic and traditional payments.
- *
- * Compatible with WHMCS 8.10.1 and PHP 7.4-8.4
+ * @package    WHMCS
+ * @author     Voltxt
+ * @copyright  2025 Voltxt
+ * @version    1.0.0
  */
 
-// Require libraries needed for gateway module functions.
-require_once __DIR__ . '/../../../init.php';
-require_once __DIR__ . '/../../../includes/gatewayfunctions.php';
-require_once __DIR__ . '/../../../includes/invoicefunctions.php';
-require_once __DIR__ . '/../voltxt/lib/ApiClient.php';
+require_once '../../../init.php';
+require_once '../../../includes/gatewayfunctions.php';
+require_once '../../../includes/invoicefunctions.php';
 
-use WHMCS\Module\Gateway\Voltxt\Lib\ApiClient;
-use WHMCS\Database\Capsule;
+// Ensure Capsule is available
+use Illuminate\Database\Capsule\Manager as Capsule;
 
-// Detect module name from filename.
-$gatewayModuleName = basename(__FILE__, '.php');
+// Get gateway configuration
+$gatewayConfig = getGatewayVariables('voltxt');
 
-// Fetch gateway configuration parameters.
-$gatewayParams = getGatewayVariables($gatewayModuleName);
-
-// Die if module is not active.
-if (!$gatewayParams['type']) {
-    die("Module Not Activated");
+if (!$gatewayConfig['type']) {
+    die('Gateway not configured');
 }
-
-// Get raw webhook payload
-$rawPayload = file_get_contents('php://input');
-
-// Die if no payload
-if (empty($rawPayload)) {
-    die("No webhook payload received");
-}
-
-// Log raw webhook for debugging
-logActivity('VOLTXT Webhook Raw Payload: ' . substr($rawPayload, 0, 500));
-
-// Decode JSON payload
-$webhookData = json_decode($rawPayload, true);
-
-// Die if invalid JSON
-if (json_last_error() !== JSON_ERROR_NONE) {
-    die("Invalid JSON payload: " . json_last_error_msg());
-}
-
-// Log decoded webhook data
-logActivity('VOLTXT Webhook Decoded: ' . json_encode($webhookData));
-
-// Initialize variables for WHMCS callback processing
-$success = false;
-$invoiceId = null;
-$transactionId = null;
-$paymentAmount = 0;
-$paymentFee = 0;
-$transactionStatus = 'Pending';
 
 try {
-    // Determine payment type and extract data
-    if (isset($webhookData['session_id'])) {
-        // Dynamic payment webhook
-        $paymentType = 'dynamic';
-        $sessionId = $webhookData['session_id'];
-        
-        // Extract invoice ID from external_payment_id
-        if (isset($webhookData['external_payment_id'])) {
-            $invoiceId = (int) str_replace('whmcs_invoice_', '', $webhookData['external_payment_id']);
-        }
-        
-        // Build transaction ID
-        $transactionId = $sessionId . '-' . time();
-        
-    } else {
-        // Traditional payment webhook
-        $paymentType = 'traditional';
-        
-        // Extract invoice ID from external_invoice_id
-        if (isset($webhookData['external_invoice_id'])) {
-            $invoiceId = (int) str_replace('whmcs_invoice_', '', $webhookData['external_invoice_id']);
-        }
-        
-        // Use payment_tx_id or invoice_number for transaction ID
-        $transactionId = $webhookData['payment_tx_id'] ?? $webhookData['invoice_number'] ?? 'voltxt-' . time();
-    }
+    $action = $_GET['action'] ?? 'webhook';
     
-    // Validate required fields
-    if (!$invoiceId) {
-        throw new Exception('No valid invoice ID found in webhook');
-    }
-    
-    if (!$transactionId) {
-        throw new Exception('No valid transaction ID found in webhook');
-    }
-    
-    // Extract payment amount
-    if (isset($webhookData['amount_fiat']) && $webhookData['amount_fiat'] > 0) {
-        $paymentAmount = (float) $webhookData['amount_fiat'];
-    } elseif (isset($webhookData['amount']) && $webhookData['amount'] > 0) {
-        $paymentAmount = (float) $webhookData['amount'];
-    } else {
-        // Try to get amount from stored session/invoice data
-        $storedData = getStoredPaymentData($invoiceId, $paymentType);
-        if ($storedData && isset($storedData['amount_fiat']) && $storedData['amount_fiat'] > 0) {
-            $paymentAmount = (float) $storedData['amount_fiat'];
-        }
-    }
-    
-    if ($paymentAmount <= 0) {
-        throw new Exception('No valid payment amount found');
-    }
-    
-    // Determine if payment was successful based on event type
-    $eventType = $webhookData['event_type'] ?? '';
-    $success = in_array($eventType, ['payment_completed', 'payment_received']);
-    
-    if ($success) {
-        $transactionStatus = 'Success - ' . ucfirst($paymentType) . ' Payment Completed';
-    } else {
-        $transactionStatus = 'Info - ' . ucfirst($eventType);
-    }
-    
-    logActivity("VOLTXT Webhook Processing: Invoice={$invoiceId}, Transaction={$transactionId}, Amount={$paymentAmount}, Type={$paymentType}, Event={$eventType}");
-    
-} catch (Exception $e) {
-    $transactionStatus = 'Error - ' . $e->getMessage();
-    logActivity('VOLTXT Webhook Error: ' . $e->getMessage());
-    
-    // Log the error transaction but don't die
-    logTransaction($gatewayParams['name'], $webhookData, $transactionStatus);
-    die("Webhook processing error: " . $e->getMessage());
-}
-
-/**
- * Validate Callback Invoice ID.
- *
- * Checks invoice ID is a valid invoice number. Note it will count an
- * invoice in any status as valid.
- *
- * Performs a die upon encountering an invalid Invoice ID.
- *
- * Returns a normalised invoice ID.
- */
-try {
-    $invoiceId = checkCbInvoiceID($invoiceId, $gatewayParams['name']);
-} catch (Exception $e) {
-    logActivity('VOLTXT Webhook Invoice Validation Failed: ' . $e->getMessage());
-    logTransaction($gatewayParams['name'], $webhookData, 'Invalid Invoice ID');
-    die("Invalid Invoice ID: " . $e->getMessage());
-}
-
-/**
- * Check Callback Transaction ID.
- *
- * Performs a check for any existing transactions with the same given
- * transaction number.
- *
- * Performs a die upon encountering a duplicate.
- */
-try {
-    checkCbTransID($transactionId);
-} catch (Exception $e) {
-    // If transaction ID exists, create a unique one
-    $originalTransactionId = $transactionId;
-    $transactionId = $transactionId . '-' . uniqid();
-    logActivity("VOLTXT Webhook: Modified transaction ID from {$originalTransactionId} to {$transactionId} due to duplicate");
-    
-    // Try again with new ID
-    try {
-        checkCbTransID($transactionId);
-    } catch (Exception $e2) {
-        logActivity('VOLTXT Webhook Transaction ID Validation Failed: ' . $e2->getMessage());
-        logTransaction($gatewayParams['name'], $webhookData, 'Duplicate Transaction ID');
-        die("Transaction ID validation failed: " . $e2->getMessage());
-    }
-}
-
-/**
- * Log Transaction.
- *
- * Add an entry to the Gateway Log for debugging purposes.
- */
-logTransaction($gatewayParams['name'], array_merge($webhookData, [
-    'processed_invoice_id' => $invoiceId,
-    'processed_transaction_id' => $transactionId,
-    'processed_amount' => $paymentAmount,
-    'payment_type' => $paymentType ?? 'unknown',
-    'webhook_received_at' => date('c')
-]), $transactionStatus);
-
-// Only process payment if it was successful
-if ($success) {
-    
-    // Check if invoice is already paid to avoid duplicate payments
-    try {
-        $whmcsInvoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first();
-        if ($whmcsInvoice && $whmcsInvoice->status === 'Paid') {
-            logActivity("VOLTXT Webhook: Invoice #{$invoiceId} already paid, skipping payment processing");
-            logTransaction($gatewayParams['name'], $webhookData, 'Invoice Already Paid');
-            echo "Invoice already paid";
-            exit;
-        }
-    } catch (Exception $e) {
-        logActivity('VOLTXT Webhook: Error checking invoice status: ' . $e->getMessage());
-    }
-    
-    /**
-     * Add Invoice Payment.
-     *
-     * Applies a payment transaction entry to the given invoice ID.
-     */
-    try {
-        addInvoicePayment(
-            $invoiceId,
-            $transactionId,
-            $paymentAmount,
-            $paymentFee,
-            $gatewayModuleName
-        );
-        
-        logActivity("VOLTXT Webhook: Successfully added payment of {$paymentAmount} to invoice #{$invoiceId} with transaction {$transactionId}");
-        
-        // Update stored payment data with completion info
-        updateStoredPaymentData($invoiceId, $paymentType, [
-            'status' => 'completed',
-            'payment_tx_id' => $webhookData['payment_tx_id'] ?? null,
-            'auto_process_tx_id' => $webhookData['auto_process_tx_id'] ?? null,
-            'whmcs_transaction_id' => $transactionId,
-            'processed_amount' => $paymentAmount,
-            'processed_at' => date('Y-m-d H:i:s')
-        ]);
-        
-        echo "Payment processed successfully";
-        
-    } catch (Exception $e) {
-        logActivity('VOLTXT Webhook: Failed to add payment: ' . $e->getMessage());
-        logTransaction($gatewayParams['name'], $webhookData, 'Payment Processing Failed: ' . $e->getMessage());
-        die("Payment processing failed: " . $e->getMessage());
-    }
-    
-} else {
-    // Log non-payment events (expired, partial, etc.)
-    logActivity("VOLTXT Webhook: Non-payment event processed - {$eventType}");
-    
-    // Update stored payment data with status
-    updateStoredPaymentData($invoiceId, $paymentType, [
-        'status' => $eventType === 'payment_expired' ? 'expired' : 'pending',
-        'last_webhook_event' => $eventType,
-        'last_webhook_at' => date('Y-m-d H:i:s')
-    ]);
-    
-    echo "Webhook processed - non-payment event";
-}
-
-/**
- * Get stored payment data from WHMCS invoice metadata
- *
- * @param int $invoiceId WHMCS invoice ID
- * @param string $paymentType Payment type (dynamic/traditional)
- * @return array|null Payment data or null
- */
-function getStoredPaymentData($invoiceId, $paymentType)
-{
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
-        
-        if (!$adminNotes) {
-            return null;
-        }
-        
-        // Check for the appropriate payment type data
-        if ($paymentType === 'dynamic') {
-            if (preg_match('/VOLTXT_DYNAMIC:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-                $serializedData = base64_decode($matches[1]);
-                $paymentData = unserialize($serializedData);
-                return ($paymentData && is_array($paymentData)) ? $paymentData : null;
-            }
-        } else {
-            if (preg_match('/VOLTXT_DATA:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-                $serializedData = base64_decode($matches[1]);
-                $paymentData = unserialize($serializedData);
-                return ($paymentData && is_array($paymentData)) ? $paymentData : null;
-            }
-        }
-        
-        return null;
-        
-    } catch (Exception $e) {
-        logActivity('VOLTXT Webhook: Error retrieving stored payment data: ' . $e->getMessage());
-        return null;
-    }
-}
-
-/**
- * Update stored payment data in WHMCS invoice metadata
- *
- * @param int $invoiceId WHMCS invoice ID
- * @param string $paymentType Payment type (dynamic/traditional)
- * @param array $updateData Data to update
- */
-function updateStoredPaymentData($invoiceId, $paymentType, $updateData)
-{
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
-        
-        if (!$adminNotes) {
-            return;
-        }
-        
-        $pattern = ($paymentType === 'dynamic') ? '/VOLTXT_DYNAMIC:([A-Za-z0-9+\/=]+)/' : '/VOLTXT_DATA:([A-Za-z0-9+\/=]+)/';
-        $marker = ($paymentType === 'dynamic') ? 'VOLTXT_DYNAMIC:' : 'VOLTXT_DATA:';
-        
-        if (preg_match($pattern, $adminNotes, $matches)) {
-            $serializedData = base64_decode($matches[1]);
-            $paymentData = unserialize($serializedData);
+    switch ($action) {
+        case 'test':
+            handleConnectionTest();
+            break;
             
-            if ($paymentData && is_array($paymentData)) {
-                // Merge update data
-                $paymentData = array_merge($paymentData, $updateData);
-                $paymentData['last_updated'] = date('Y-m-d H:i:s');
-                
-                // Re-serialize and update
-                $newSerializedData = base64_encode(serialize($paymentData));
-                $newAdminNotes = preg_replace($pattern, $marker . $newSerializedData, $adminNotes);
-                
-                Capsule::table('tblinvoices')
-                    ->where('id', $invoiceId)
-                    ->update(['adminonly' => $newAdminNotes]);
-                    
-                logActivity("VOLTXT Webhook: Updated {$paymentType} payment data for invoice {$invoiceId}");
+        case 'webhook':
+            handleWebhook();
+            break;
+            
+        default:
+            handleStatusCheck();
+    }
+
+} catch (Exception $e) {
+    error_log("Voltxt Callback Error: " . $e->getMessage());
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+}
+
+/**
+ * Handle API connection test
+ */
+function handleConnectionTest()
+{
+    header('Content-Type: application/json');
+    
+    try {
+        // Check admin access
+        if (!isset($_SESSION['adminid'])) {
+            throw new Exception('Admin access required');
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            throw new Exception('POST request required');
+        }
+
+        $apiKey = $_POST['api_key'] ?? '';
+        $network = $_POST['network'] ?? 'testnet';
+
+        // Basic validation
+        if (empty($apiKey)) {
+            throw new Exception('API key is required');
+        }
+
+        if (strlen($apiKey) !== 32) {
+            throw new Exception('API key must be 32 characters');
+        }
+
+        if (!in_array($network, ['testnet', 'mainnet'])) {
+            throw new Exception('Invalid network');
+        }
+
+        // Test API connection
+        $testData = [
+            'api_key' => $apiKey,
+            'network' => $network,
+            'store_name' => 'WHMCS Store',
+        ];
+
+        $response = callVoltxtTestAPI('/api/plugin/test-connection', $testData);
+
+        if ($response['success']) {
+            $store = $response['data']['store'];
+            
+            echo json_encode([
+                'success' => true,
+                'store_name' => $store['name'],
+                'network' => $store['network'],
+                'has_wallet' => $store['has_destination_wallet'],
+                'message' => 'Connection successful'
+            ]);
+        } else {
+            throw new Exception($response['error'] ?? 'Connection test failed');
+        }
+
+    } catch (Exception $e) {
+        echo json_encode([
+            'success' => false,
+            'error' => $e->getMessage()
+        ]);
+    }
+}
+
+/**
+ * Handle webhook from Voltxt backend
+ */
+function handleWebhook()
+{
+    global $gatewayConfig;
+    
+    $rawPayload = file_get_contents('php://input');
+    if (empty($rawPayload)) {
+        throw new Exception('Empty webhook payload');
+    }
+
+    $payload = json_decode($rawPayload, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        throw new Exception('Invalid JSON payload');
+    }
+
+    // Log for debugging
+    error_log("Voltxt Webhook Payload: " . json_encode($payload));
+
+    $eventType = $payload['event_type'] ?? '';
+    $sessionId = $payload['session_id'] ?? $payload['external_invoice_id'] ?? '';
+    $status = $payload['status'] ?? '';
+    $paymentTxId = $payload['payment_tx_id'] ?? '';
+    $amountReceived = $payload['amount_received_crypto'] ?? 0;
+
+    if (empty($sessionId)) {
+        throw new Exception('Missing session ID in webhook');
+    }
+
+    if (empty($paymentTxId)) {
+        error_log("Voltxt Webhook Warning: Missing payment_tx_id for session {$sessionId}");
+    }
+
+    $invoiceId = findInvoiceBySession($sessionId);
+    if (!$invoiceId) {
+        // Try to extract from metadata
+        $metadata = $payload['metadata'] ?? [];
+        $invoiceId = $metadata['invoice_id'] ?? $metadata['whmcs_invoice_id'] ?? null;
+    }
+    
+    if (!$invoiceId) {
+        throw new Exception('Invoice not found for session: ' . $sessionId);
+    }
+
+    logActivity("Voltxt Gateway: Webhook received - Event: {$eventType}, Status: {$status}, TxID: {$paymentTxId}", $invoiceId);
+
+    // Process payment completion for any "completed" status
+    if ($eventType === 'payment_completed' || in_array($status, ['completed', 'paid', 'auto_processed'])) {
+        if (empty($paymentTxId)) {
+            throw new Exception('Payment transaction ID required for completed payment');
+        }
+        processPaymentCompleted($invoiceId, $paymentTxId, $amountReceived, $sessionId);
+    } else {
+        // Handle other statuses
+        updateSessionStatus($sessionId, $status);
+        logActivity("Voltxt Gateway: Status updated to {$status}", $invoiceId);
+    }
+
+    echo json_encode(['success' => true, 'invoice_id' => $invoiceId]);
+}
+
+/**
+ * Handle status check from frontend
+ */
+function handleStatusCheck()
+{
+    $sessionId = $_GET['session_id'] ?? '';
+    
+    if (empty($sessionId)) {
+        throw new Exception('Session ID required');
+    }
+
+    // Get session from database
+    $pdo = Capsule::connection()->getPdo();
+    $stmt = $pdo->prepare("SELECT * FROM mod_voltxt_sessions WHERE session_id = ?");
+    $stmt->execute([$sessionId]);
+    $session = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$session) {
+        throw new Exception('Session not found');
+    }
+
+    // Check if invoice is paid
+    $stmt = $pdo->prepare("SELECT status FROM tblinvoices WHERE id = ?");
+    $stmt->execute([$session['invoice_id']]);
+    $invoiceStatus = $stmt->fetch(PDO::FETCH_COLUMN);
+
+    $response = [
+        'success' => true,
+        'session' => [
+            'session_id' => $sessionId,
+            'status' => $invoiceStatus === 'Paid' ? 'completed' : $session['status'],
+            'invoice_id' => $session['invoice_id'],
+        ]
+    ];
+
+    echo json_encode($response);
+}
+
+/**
+ * Process completed payment
+ */
+function processPaymentCompleted($invoiceId, $paymentTxId, $amountReceived, $sessionId)
+{
+    // Check if already paid
+    $invoice = Capsule::table('tblinvoices')->find($invoiceId);
+    if (!$invoice) {
+        throw new Exception('Invoice not found: ' . $invoiceId);
+    }
+    
+    if ($invoice->status === 'Paid') {
+        logActivity("Voltxt Gateway: Invoice already paid", $invoiceId);
+        return;
+    }
+
+    if (empty($paymentTxId)) {
+        throw new Exception('Payment transaction ID missing');
+    }
+
+    // Add payment to WHMCS using the proper API
+    $command = 'AddInvoicePayment';
+    $postData = [
+        'invoiceid' => $invoiceId,
+        'transid' => $paymentTxId,
+        'amount' => $invoice->total,
+        'gateway' => 'voltxt',
+        'date' => date('Y-m-d H:i:s'), // Include time
+        'fees' => 0,
+    ];
+
+    logActivity("Voltxt Gateway: Adding payment - " . json_encode($postData), $invoiceId);
+
+    $result = localAPI($command, $postData);
+
+    logActivity("Voltxt Gateway: AddInvoicePayment result - " . json_encode($result), $invoiceId);
+
+    if ($result['result'] === 'success') {
+        updateSessionStatus($sessionId, 'completed');
+        logActivity("Voltxt Gateway: Payment confirmed - TxID: {$paymentTxId}, Amount: {$invoice->total}", $invoiceId);
+        
+        // Send email confirmation
+        try {
+            $emailCommand = 'SendEmail';
+            $emailData = [
+                'messagename' => 'Invoice Payment Confirmation',
+                'id' => $invoiceId,
+            ];
+            $emailResult = localAPI($emailCommand, $emailData);
+            
+            if ($emailResult['result'] === 'success') {
+                logActivity("Voltxt Gateway: Payment confirmation email sent", $invoiceId);
             }
+        } catch (Exception $e) {
+            logActivity("Voltxt Gateway: Failed to send confirmation email - " . $e->getMessage(), $invoiceId);
         }
         
+    } else {
+        $errorMsg = $result['message'] ?? json_encode($result);
+        logActivity("Voltxt Gateway: Failed to add payment - " . $errorMsg, $invoiceId);
+        throw new Exception('Failed to add payment to WHMCS: ' . $errorMsg);
+    }
+}
+
+/**
+ * Call Voltxt API for testing
+ */
+function callVoltxtTestAPI($endpoint, $data)
+{
+    $url = 'https://api.voltxt.io' . $endpoint;
+    
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($data),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'User-Agent: WHMCS-Voltxt-Test/1.0',
+        ],
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        return ['success' => false, 'error' => 'Network error: ' . $error];
+    }
+
+    $decoded = json_decode($response, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return ['success' => false, 'error' => 'Invalid response format'];
+    }
+
+    return $decoded;
+}
+
+/**
+ * Helper functions
+ */
+function updateSessionStatus($sessionId, $status)
+{
+    try {
+        $pdo = Capsule::connection()->getPdo();
+        $stmt = $pdo->prepare("UPDATE mod_voltxt_sessions SET status = ? WHERE session_id = ?");
+        return $stmt->execute([$status, $sessionId]);
     } catch (Exception $e) {
-        logActivity('VOLTXT Webhook: Error updating stored payment data: ' . $e->getMessage());
+        return false;
+    }
+}
+
+function findInvoiceBySession($sessionId)
+{
+    try {
+        $pdo = Capsule::connection()->getPdo();
+        $stmt = $pdo->prepare("SELECT invoice_id FROM mod_voltxt_sessions WHERE session_id = ?");
+        $stmt->execute([$sessionId]);
+        return $stmt->fetch(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {
+        return null;
     }
 }

@@ -1,214 +1,250 @@
-# VOLTXT WHMCS Gateway Plugin
+# Voltxt Solana Payment Gateway for WHMCS
 
-Accept Solana (SOL) payments in WHMCS with real-time pricing and instant processing.
+A secure, fast, and easy-to-integrate Solana cryptocurrency payment gateway for WHMCS that enables businesses to accept SOL payments with real-time processing and automatic invoice management.
 
 ## Features
 
-- **Dynamic Payment Sessions** - Real-time SOL pricing with instant processing
-- **Dual Network Support** - Testnet for development, Mainnet for production
-- **Auto-Processing** - Payments processed automatically on confirmation
-- **Live Connection Testing** - Built-in API connectivity verification
-- **Comprehensive Admin Interface** - Payment tracking with blockchain explorer links
-- **Webhook Support** - Real-time payment status updates
+- **Dynamic Payment Processing**: Real-time SOL price conversion with automatic payment detection
+- **Secure PDA Generation**: Uses Solana Program Derived Addresses for enhanced security
+- **Automatic Invoice Management**: Payments are automatically applied to WHMCS invoices
+- **Real-time Status Updates**: Live payment tracking with Server-Sent Events
+- **Multi-network Support**: Works on both Solana mainnet and testnet
+- **Webhook Integration**: Reliable payment notifications via webhooks
+- **Payment Expiration**: Configurable payment timeouts (1-168 hours)
+- **Session Management**: Prevents duplicate payments with intelligent session handling
 
 ## Requirements
 
-- WHMCS 8.0+
-- PHP 7.4 - 8.4
-- MySQL/MariaDB
-- SSL Certificate (for webhooks)
-- VOLTXT Account with API access
+- WHMCS 7.8 or higher
+- PHP 7.4 or higher
+- MySQL 5.7 or higher
+- SSL certificate (required for production)
+- Voltxt API account (sign up at [app.voltxt.io](https://app.voltxt.io))
 
 ## Installation
 
-1. **Upload Files**
-   ```
-   modules/gateways/voltxt.php
-   modules/gateways/voltxt/
-   modules/gateways/callback/voltxt.php
-   ```
+### 1. Download and Extract
 
-2. **Set Permissions**
-   ```bash
-   chmod 644 modules/gateways/voltxt.php
-   chmod 644 modules/gateways/callback/voltxt.php
-   chmod -R 755 modules/gateways/voltxt/
-   ```
+Download the Voltxt payment gateway files and extract them to your WHMCS installation directory.
 
-3. **Activate Gateway**
-   - Login to WHMCS Admin
-   - Go to `Setup → Payments → Payment Gateways`
-   - Activate `VOLTXT Crypto Payments`
+### 2. Upload Files
+
+Upload the following files to your WHMCS installation:
+
+```
+/modules/gateways/voltxt.php
+/modules/gateways/callback/voltxt.php
+```
+
+### 3. File Permissions
+
+Ensure the uploaded files have the correct permissions:
+
+```bash
+chmod 644 /path/to/whmcs/modules/gateways/voltxt.php
+chmod 644 /path/to/whmcs/modules/gateways/callback/voltxt.php
+```
+
+### 4. Database Setup
+
+The plugin will automatically create the required database table (`mod_voltxt_sessions`) when first used.
 
 ## Configuration
 
-### Required Settings
+### 1. Enable the Gateway
 
-| Field | Description |
-|-------|-------------|
-| **API URL** | `https://api.voltxt.io` |
-| **API Key** | Your VOLTXT API key from dashboard |
-| **Testnet Mode** | Enable for testing, disable for live transactions |
+1. Log in to your WHMCS Admin Area
+2. Go to **Setup** > **Payments** > **Payment Gateways**
+3. Click on **All Payment Gateways**
+4. Find "Voltxt Solana Payment Gateway" and click **Activate**
 
-### Optional Settings
+### 2. Configure Settings
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| **Payment Expiry** | Hours until payment expires | 24 |
-| **Show Instructions** | Display payment guidance to customers | On |
+Fill in the following configuration fields:
 
-### Connection Testing
+#### API Key
+- **Required**: Your 32-character Voltxt API key
+- **Where to get it**: [app.voltxt.io](https://app.voltxt.io) > Dashboard > API Keys
+- **Format**: Exactly 32 characters (letters and numbers)
 
-The gateway includes built-in connection testing that validates:
-- API connectivity and credentials
-- Network configuration (testnet/mainnet)
-- Store setup and destination wallet
-- Account permissions
+#### Network
+- **Testnet**: Use for testing and development
+- **Mainnet**: Use for live payments
+- **Note**: Your API key must match the selected network
 
-## Webhook Configuration
+#### Payment Expiry (Hours)
+- **Default**: 24 hours
+- **Range**: 1-168 hours (1 week maximum)
+- **Recommendation**: 24-48 hours for most use cases
 
-Configure webhook URL in your VOLTXT dashboard:
+#### Debug Mode
+- **Enable**: For troubleshooting and development
+- **Disable**: For production use
+- **Note**: Creates detailed logs in WHMCS Activity Log
 
+### 3. Test Connection
+
+1. Enter your API key and select network
+2. Click **Test API Connection**
+3. Verify connection shows "Connected! Store: [Your Store Name]"
+4. Save configuration
+
+## Usage
+
+### For Administrators
+
+#### Payment Processing Flow
+1. Customer selects Voltxt payment method at checkout
+2. WHMCS creates payment session via Voltxt API
+3. Customer is redirected to secure Voltxt payment page
+4. Customer completes payment using Solana wallet
+5. Voltxt processes payment and sends webhook to WHMCS
+6. WHMCS automatically marks invoice as paid
+7. Customer is redirected back to WHMCS with confirmation
+
+#### Monitoring Payments
+- **Activity Log**: Setup > Logs > Activity Log (search "Voltxt")
+- **Gateway Log**: Setup > Logs > Gateway Log
+- **Invoice History**: View individual invoice payment records
+
+### For Customers
+
+#### Payment Process
+1. Select "Pay with Solana" at checkout
+2. Click "Pay with Solana Wallet" button
+3. Scan QR code or copy payment details
+4. Send exact SOL amount to provided address
+5. Wait for blockchain confirmation
+6. Automatic redirect back to invoice
+
+#### Supported Wallets
+- Phantom Wallet
+- Solflare
+- Ledger Hardware Wallets
+- Any Solana-compatible wallet
+
+## Webhooks
+
+### Webhook URL
+The plugin automatically configures webhooks using:
 ```
 https://yourdomain.com/modules/gateways/callback/voltxt.php
 ```
 
-### Supported Events
-- `payment_completed` - Payment successfully processed
-- `payment_expired` - Payment session expired
-- `overpayment_detected` - Customer sent too much SOL
+### Webhook Events
+- `payment_completed`: Payment successfully processed
+- `payment_cancelled`: Payment cancelled by user
+- `payment_expired`: Payment session expired
 
-## File Structure
-
-```
-modules/gateways/
-├── voltxt.php                          # Main gateway module
-├── voltxt/
-│   ├── lib/
-│   │   └── ApiClient.php              # VOLTXT API client
-│   ├── hooks.php                      # Admin interface enhancements
-│   ├── refresh_status.php             # Manual payment status refresh
-│   ├── webhook_test.php               # Webhook testing tool
-│   └── install.php                    # Installation verification
-└── callback/
-    └── voltxt.php                     # Webhook handler
-```
-
-## Testing
-
-### 1. Test Installation
-```bash
-php modules/gateways/voltxt/install.php
-```
-
-### 2. Test Webhook
-```bash
-curl -X POST "https://yourdomain.com/modules/gateways/callback/voltxt.php" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_type": "payment_completed",
-    "session_id": "dp_test123",
-    "external_payment_id": "whmcs_invoice_123",
-    "network": "testnet",
-    "amount_fiat": 10.00,
-    "payment_tx_id": "test_tx_12345"
-  }'
-```
-
-### 3. Debug Tools
-- **Connection Test**: Built into gateway settings
-- **Webhook Test**: `modules/gateways/voltxt/webhook_test.php`
-- **Status Refresh**: Available in admin invoice view
-
-## Payment Flow
-
-### Customer Experience
-1. Customer selects VOLTXT payment method
-2. Redirected to dynamic payment page with real Solana address
-3. Sends exact SOL amount to provided address
-4. Payment auto-processed on blockchain confirmation
-5. Redirected back to store with payment confirmation
-
-### Technical Flow
-1. **Payment Initiation** → VOLTXT API creates dynamic session
-2. **Address Generation** → Unique Solana PDA created for payment
-3. **Customer Payment** → SOL sent to generated address
-4. **Payment Detection** → VOLTXT monitors blockchain
-5. **Webhook Delivery** → Payment status sent to WHMCS
-6. **Auto-Processing** → Invoice marked paid, customer notified
+### Webhook Security
+- Webhooks include signature verification
+- All webhook data is validated before processing
+- Failed webhooks are logged for debugging
 
 ## Troubleshooting
 
 ### Common Issues
 
-**"Module Not Activated"**
-- Ensure gateway is activated in WHMCS admin
-- Check file permissions
+#### "Invalid API key configuration"
+- Verify API key is exactly 32 characters
+- Ensure API key matches selected network (testnet/mainnet)
+- Check API key permissions in Voltxt dashboard
 
-**"Connection Failed"**
-- Verify API URL and key
-- Check network setting (testnet/mainnet)
+#### "Payment session not found"
+- Check if payment expired (default 24 hours)
+- Verify webhook URL is accessible
+- Check WHMCS activity logs for errors
+
+#### "Connection test failed"
+- Verify internet connectivity
+- Check if firewall blocks outbound HTTPS
 - Ensure SSL certificate is valid
 
-**"Webhook Not Received"**
-- Verify webhook URL in VOLTXT dashboard
-- Check server firewall settings
-- Test webhook endpoint directly
+#### Payment not marked as paid
+- Check WHMCS Activity Log for webhook receipt
+- Verify webhook URL is publicly accessible
+- Ensure payment amount matches invoice total
 
-**"Payment Not Recording"**
-- Check WHMCS Activity Log for webhook entries
-- Verify invoice ID format in webhook
-- Ensure gateway name matches in WHMCS
+### Debug Mode
 
-### Debug Steps
+Enable debug mode for detailed logging:
 
-1. **Check Gateway Configuration**
-   ```
-   Setup → Payments → Payment Gateways → VOLTXT
-   ```
+1. Go to gateway configuration
+2. Enable "Debug Mode"
+3. Save configuration
+4. Check Setup > Logs > Activity Log for detailed events
 
-2. **Review Activity Logs**
-   ```
-   Utilities → Logs → Activity Log
-   Search for: "VOLTXT"
-   ```
+### Log Locations
 
-3. **Check Gateway Logs**
-   ```
-   Utilities → Logs → Gateway Log
-   Filter by: voltxt
-   ```
+- **Activity Log**: Setup > Logs > Activity Log (search "Voltxt")
+- **Gateway Log**: Setup > Logs > Gateway Log
+- **PHP Error Log**: Check server error logs for PHP errors
 
-4. **Test Webhook Manually**
-   ```
-   Access: modules/gateways/voltxt/webhook_test.php
-   ```
+## Security Considerations
+
+### SSL Requirements
+- SSL certificate is required for production use
+- Webhooks require HTTPS endpoints
+- Payment pages use encrypted connections
+
+### API Key Security
+- Store API keys securely
+- Use testnet for development
+- Rotate API keys periodically
+- Never expose API keys in client-side code
+
+### Network Security
+- Whitelist Voltxt webhook IPs if using firewall
+- Monitor for unusual payment patterns
+- Regular security updates for WHMCS
 
 ## Support
 
-- **Documentation**: [VOLTXT Documentation](https://docs.voltxt.io)
-- **API Reference**: [VOLTXT API Docs](https://api.voltxt.io/docs)
-- **GitHub Issues**: Report bugs and feature requests
+### Documentation
+- [Voltxt API Documentation](https://docs.voltxt.io)
+- [WHMCS Developer Docs](https://developers.whmcs.com)
 
-## Security
+### Getting Help
 
-- All payment data stored in admin-only invoice notes
-- Webhook signature validation supported
-- No sensitive data stored in visible areas
-- PCI compliance not required (crypto payments)
+#### Voltxt Support
+- **Email**: support@voltxt.io
+- **Documentation**: [docs.voltxt.io](https://docs.voltxt.io)
+- **Dashboard**: [app.voltxt.io](https://app.voltxt.io)
+
+#### WHMCS Support
+- Check WHMCS system logs first
+- Provide payment session IDs when reporting issues
+- Include relevant log entries
+
+### Reporting Issues
+
+When reporting issues, please include:
+- WHMCS version
+- PHP version
+- Error messages from logs
+- Payment session ID (if applicable)
+- Steps to reproduce the issue
+
+## Changelog
+
+### Version 1.0.0
+- Initial release
+- Dynamic payment processing
+- Webhook integration
+- Session management
+- Real-time payment tracking
+- Multi-network support
 
 ## License
 
 This plugin is provided under the MIT License. See LICENSE file for details.
 
-## Changelog
+## Disclaimer
 
-### v2.0.0
-- Dynamic payment sessions with real-time pricing
-- Enhanced admin interface with payment tracking
-- Improved webhook handling and error reporting
-- Built-in connection testing and debugging tools
-- Automatic payment processing on confirmation
+This software is provided "as is" without warranty. Always test thoroughly on testnet before using in production. Cryptocurrency payments are irreversible - ensure proper testing and validation.
 
-### v1.0.0
-- Initial release with basic Solana payment support
+---
+
+**Voltxt** - Simplifying Solana payments for businesses worldwide.
+
+For more information, visit [voltxt.io](https://voltxt.io)

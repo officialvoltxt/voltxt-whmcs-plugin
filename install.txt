@@ -1,0 +1,21 @@
+VOLTXT WHMCS PAYMENT GATEWAY - QUICK INSTALL
+
+1. Upload files:
+   - modules/gateways/voltxt.php
+   - modules/gateways/callback/voltxt.php
+
+2. Activate gateway:
+   WHMCS Admin > Setup > Payments > Payment Gateways > 
+   All Payment Gateways > Voltxt Solana Payment Gateway > Activate
+
+3. Configure:
+   - Add your 32-character Voltxt API key
+   - Select network (testnet/mainnet)
+   - Test connection
+   - Save
+
+4. Test:
+   Create test invoice and process payment
+
+For detailed instructions, see README.md
+Support: support@voltxt.io

@@ -1,34 +1,29 @@
 <?php
 /**
- * VOLTXT Crypto Payment Gateway for WHMCS
- * 
- * Compatible with WHMCS 8.10.1 and PHP 7.4-8.4
- * Updated to use Dynamic Payment Controller
- * 
- * @author VOLTXT
- * @version 2.0.0
+ * Voltxt Solana Payment Gateway Module for WHMCS
+ * Simple redirect-based gateway that integrates with Voltxt dynamic payment API
+ *
+ * @package    WHMCS
+ * @author     Voltxt
+ * @copyright  2025 Voltxt
+ * @version    1.0.0
+ * @link       https://voltxt.io
  */
 
 if (!defined("WHMCS")) {
     die("This file cannot be accessed directly");
 }
 
-require_once __DIR__ . '/voltxt/lib/ApiClient.php';
-
-use WHMCS\Module\Gateway\Voltxt\Lib\ApiClient;
-use WHMCS\Config\Setting;
-use WHMCS\Database\Capsule;
+// Ensure Capsule is available
+use Illuminate\Database\Capsule\Manager as Capsule;
 
 /**
- * Define gateway metadata.
- * This function is REQUIRED for WHMCS to discover the module.
- *
- * @return array
+ * Gateway metadata
  */
 function voltxt_MetaData()
 {
     return [
-        'DisplayName' => 'VOLTXT Crypto Payments',
+        'DisplayName' => 'Voltxt Solana Payment Gateway',
         'APIVersion' => '1.1',
         'DisableLocalCreditCardInput' => true,
         'TokenisedStorage' => false,
@@ -36,693 +31,461 @@ function voltxt_MetaData()
 }
 
 /**
- * Runs on module activation.
- * No database table required - uses WHMCS invoice metadata.
- *
- * @return array Success message.
- */
-function voltxt_activate()
-{
-    return [
-        'status' => 'success',
-        'description' => 'VOLTXT gateway activated successfully. Ready to accept Solana (SOL) payments.',
-    ];
-}
-
-/**
- * Runs on module deactivation.
- * Nothing to clean up as we use WHMCS invoice metadata.
- *
- * @return array Success message.
- */
-function voltxt_deactivate()
-{
-    return [
-        'status' => 'success',
-        'description' => 'VOLTXT gateway deactivated successfully.',
-    ];
-}
-
-/**
- * Define gateway configuration options.
- *
- * @return array
+ * Gateway configuration fields
  */
 function voltxt_config()
 {
-    // Connection test
-    $connectionStatusHtml = '';
-    try {
-        $gatewayParams = getGatewayVariables('voltxt');
-        if (!empty($gatewayParams['apiKey']) && !empty($gatewayParams['apiUrl'])) {
-            $network = ($gatewayParams['testMode'] === 'on') ? 'testnet' : 'mainnet';
-            $apiClient = new ApiClient($gatewayParams['apiKey'], $gatewayParams['apiUrl'], $network);
-            $companyName = Setting::getValue('CompanyName') ?: 'WHMCS Installation';
-            $testResult = $apiClient->testConnection($companyName);
-            
-            if (isset($testResult['success']) && $testResult['success']) {
-                $networkDisplay = ($network === 'mainnet') ? 
-                    '<strong style="color: #d9534f;">MAINNET (LIVE)</strong>' : 
-                    '<strong style="color: #5cb85c;">TESTNET</strong>';
-                $details = "✓ Successfully connected to VOLTXT on the {$networkDisplay} network.";
-                
-                if (!empty($testResult['data']['store']['name'])) {
-                    $details .= "<br>Store: <strong>" . htmlspecialchars($testResult['data']['store']['name']) . "</strong>";
-                }
-                if (!empty($testResult['data']['user']['email'])) {
-                    $details .= "<br>Account: <strong>" . htmlspecialchars($testResult['data']['user']['email']) . "</strong>";
-                }
-                if (isset($testResult['data']['store']['has_destination_wallet'])) {
-                    $walletStatus = $testResult['data']['store']['has_destination_wallet'] ? 
-                        '<span style="color: #5cb85c;">✓ Configured</span>' : 
-                        '<span style="color: #d9534f;">✗ Not Configured</span>';
-                    $details .= "<br>Destination Wallet: {$walletStatus}";
-                }
-                
-                $connectionStatusHtml = '<div class="alert alert-success" style="margin: 15px 0;">' . $details . '</div>';
-            } else {
-                $errorMessage = isset($testResult['message']) ? $testResult['message'] : 'Unknown error occurred';
-                $errorCode = isset($testResult['error_code']) ? ' (' . $testResult['error_code'] . ')' : '';
-                $connectionStatusHtml = '<div class="alert alert-danger" style="margin: 15px 0;"><strong>✗ Connection Failed:</strong> ' . htmlspecialchars($errorMessage) . $errorCode . '</div>';
-            }
-        } else {
-            $connectionStatusHtml = '<div class="alert alert-warning" style="margin: 15px 0;"><strong>Configuration Required:</strong> Please enter your API credentials below and save to test the connection.</div>';
-        }
-    } catch (Exception $e) {
-        $connectionStatusHtml = '<div class="alert alert-danger" style="margin: 15px 0;"><strong>Error:</strong> ' . htmlspecialchars($e->getMessage()) . '</div>';
-    }
-
     return [
-        'FriendlyName' => ['Type' => 'System', 'Value' => 'VOLTXT Crypto Payments (SOL)'],
-        'connectionStatus' => [
-            'Type' => 'description', 
-            'Description' => $connectionStatusHtml . '<p><strong>Note:</strong> The connection will be tested automatically when you save your configuration.</p>'
+        'FriendlyName' => [
+            'Type' => 'System',
+            'Value' => 'Voltxt Solana Payment Gateway',
         ],
-        'apiUrl' => [
-            'FriendlyName' => 'API URL',
+        'api_key' => [
+            'FriendlyName' => 'API Key',
             'Type' => 'text',
             'Size' => '50',
-            'Default' => 'https://api.voltxt.io',
-            'Description' => 'Your VOLTXT API endpoint URL.',
+            'Default' => '',
+            'Description' => 'Enter your 32-character Voltxt API Key from app.voltxt.io',
         ],
-        'apiKey' => [
-            'FriendlyName' => 'API Key',
-            'Type' => 'password',
-            'Size' => '50',
-            'Description' => 'Your VOLTXT API Key from your account dashboard.',
+        'network' => [
+            'FriendlyName' => 'Network',
+            'Type' => 'dropdown',
+            'Options' => [
+                'testnet' => 'Testnet (for testing)',
+                'mainnet' => 'Mainnet (live payments)',
+            ],
+            'Default' => 'testnet',
+            'Description' => 'Select Solana network',
         ],
-        'testMode' => [
-            'FriendlyName' => 'Testnet Mode',
-            'Type' => 'yesno',
-            'Description' => 'Enable for testing with Solana Testnet. Disable for live transactions on Mainnet.',
-        ],
-        'expiryHours' => [
+        'expiry_hours' => [
             'FriendlyName' => 'Payment Expiry (Hours)',
             'Type' => 'text',
             'Size' => '5',
             'Default' => '24',
-            'Description' => 'Hours until payment expires (1-168 hours).',
+            'Description' => 'Hours before payment expires (1-168)',
         ],
-        'showInstructions' => [
-            'FriendlyName' => 'Show Payment Instructions',
+        'debug_mode' => [
+            'FriendlyName' => 'Debug Mode',
             'Type' => 'yesno',
-            'Description' => 'Show additional payment instructions to customers.',
-            'Default' => 'on',
+            'Default' => 'off',
+            'Description' => 'Enable debug logging',
+        ],
+        'test_connection' => [
+            'FriendlyName' => 'Test Connection',
+            'Type' => 'text',
+            'Size' => '30',
+            'Default' => '',
+            'Description' => '<style>input[name="field[test_connection]"] { display: none; }</style>
+                <button type="button" id="voltxt-test-btn" onclick="testVoltxtConnection()">Test API Connection</button>
+                <div id="voltxt-test-result" style="margin-top: 10px;"></div>
+                <script>
+                function testVoltxtConnection() {
+                    const btn = document.getElementById("voltxt-test-btn");
+                    const result = document.getElementById("voltxt-test-result");
+                    const apiKey = document.querySelector("input[name=\'field[api_key]\']").value;
+                    const network = document.querySelector("select[name=\'field[network]\']").value;
+                    
+                    if (!apiKey) {
+                        result.innerHTML = "<div style=\'color: orange;\'>Please enter API key first</div>";
+                        return;
+                    }
+                    
+                    btn.disabled = true;
+                    btn.textContent = "Testing...";
+                    result.innerHTML = "<div style=\'color: blue;\'>Testing connection...</div>";
+                    
+                    fetch("../modules/gateways/callback/voltxt.php?action=test", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                        body: "api_key=" + encodeURIComponent(apiKey) + "&network=" + encodeURIComponent(network)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            result.innerHTML = "<div style=\'color: green;\'>✓ Connected! Store: " + data.store_name + "</div>";
+                        } else {
+                            result.innerHTML = "<div style=\'color: red;\'>✗ Failed: " + data.error + "</div>";
+                        }
+                    })
+                    .catch(error => {
+                        result.innerHTML = "<div style=\'color: red;\'>✗ Error: " + error.message + "</div>";
+                    })
+                    .finally(() => {
+                        btn.disabled = false;
+                        btn.textContent = "Test API Connection";
+                    });
+                }
+                </script>',
         ],
     ];
 }
 
 /**
- * Generate the payment link/button for the invoice.
- *
- * @param array $params Payment gateway parameters.
- * @return string The HTML for the payment button.
+ * Payment processing - show payment button instead of immediate redirect
  */
 function voltxt_link($params)
 {
-    // Validate required parameters
-    if (empty($params['apiKey']) || empty($params['apiUrl'])) {
-        return '<div class="alert alert-danger">Gateway not configured properly. Please contact support.</div>';
-    }
-
-    $network = ($params['testMode'] === 'on') ? 'testnet' : 'mainnet';
-    $invoiceId = $params['invoiceid'];
-    
-    // Dynamic payments are always enabled (no option to disable)
-    $useDynamicPayments = true;
-
     try {
-        $apiClient = new ApiClient($params['apiKey'], $params['apiUrl'], $network);
-        
-        if ($useDynamicPayments) {
-            // Use Dynamic Payment Controller
-            $paymentUrl = createDynamicPayment($params, $apiClient);
-        } else {
-            // Use Traditional Invoice Controller (fallback)
-            $paymentUrl = createTraditionalInvoice($params, $apiClient);
+        // Validate configuration
+        if (empty($params['api_key']) || strlen($params['api_key']) !== 32) {
+            return ['error' => 'Invalid API key configuration'];
         }
-        
-        // Generate payment button HTML
-        $networkBadge = ($network === 'testnet') ? 
-            '<span class="badge badge-success" style="margin-left: 10px;">TESTNET</span>' : 
-            '<span class="badge badge-danger" style="margin-left: 10px;">LIVE</span>';
 
-        $htmlOutput = '<div class="voltxt-payment-section" style="margin: 20px 0;">';
-        $htmlOutput .= '<div class="row">';
-        $htmlOutput .= '<div class="col-md-12">';
-        
-        // Payment button
-        $htmlOutput .= '<a href="' . htmlspecialchars($paymentUrl) . '" class="btn btn-primary btn-lg btn-block" target="_blank" rel="noopener noreferrer">';
-        $htmlOutput .= '<i class="fas fa-coins"></i> Pay with Solana (SOL)';
-        $htmlOutput .= '</a>';
-        
-        $htmlOutput .= $networkBadge;
-        
-        // Show instructions if enabled
-        if (isset($params['showInstructions']) && $params['showInstructions'] === 'on') {
-            $htmlOutput .= '<div class="alert alert-info" style="margin-top: 15px;">';
-            $htmlOutput .= '<h5><i class="fas fa-info-circle"></i> Payment Instructions</h5>';
-            $htmlOutput .= '<ul class="mb-0">';
-            $htmlOutput .= '<li>Click the button above to open the VOLTXT payment page</li>';
-            $htmlOutput .= '<li>You will be provided with a Solana wallet address to send payment to</li>';
-            $htmlOutput .= '<li>Send the exact SOL amount shown on the payment page</li>';
-            if ($network === 'testnet') {
-                $htmlOutput .= '<li><strong>This is a test transaction using Testnet SOL (no real value)</strong></li>';
-            }
-            $htmlOutput .= '<li>Your order will be processed automatically once payment is confirmed</li>';
-            $htmlOutput .= '</ul>';
-            $htmlOutput .= '</div>';
-        }
-        
-        // Add dynamic payment info since it's always enabled
-        $htmlOutput .= '<div class="alert alert-success" style="margin-top: 10px; font-size: 12px;">';
-        $htmlOutput .= '<i class="fas fa-bolt"></i> <strong>Dynamic Payment:</strong> Real-time pricing and instant processing enabled.';
-        $htmlOutput .= '</div>';
-        
-        $htmlOutput .= '</div>';
-        $htmlOutput .= '</div>';
-        $htmlOutput .= '</div>';
+        // Check for existing active session first
+        $existingSession = getExistingActiveSession($params['invoiceid']);
+        $sessionId = null;
+        $paymentUrl = null;
 
-        return $htmlOutput;
-
-    } catch (Exception $e) {
-        logActivity('VOLTXT Plugin Exception for WHMCS Invoice #' . $invoiceId . ': ' . $e->getMessage());
-        return '<div class="alert alert-danger">A critical error occurred. Please contact support. Reference: ' . $invoiceId . '</div>';
-    }
-}
-
-/**
- * Create a dynamic payment session
- *
- * @param array $params Payment parameters
- * @param ApiClient $apiClient API client instance
- * @return string Payment URL
- */
-function createDynamicPayment($params, $apiClient)
-{
-    $invoiceId = $params['invoiceid'];
-    $network = $apiClient->getNetwork();
-    
-    // Check for existing dynamic payment session
-    $existingSession = getExistingDynamicSession($invoiceId, $network, $params);
-    
-    if ($existingSession && !isDynamicSessionExpired($existingSession)) {
-        // Use existing valid session - return URL as-is from API
-        return $existingSession['payment_url'];
-    }
-    
-    // Clear any old session data
-    clearDynamicSessionData($invoiceId);
-    
-    // Create new dynamic payment session
-    $response = $apiClient->createDynamicPayment($params);
-    
-    if (isset($response['success']) && $response['success']) {
-        $sessionData = $response['data'];
-        $paymentUrl = $sessionData['payment_url']; // Use URL as returned by API
-        $sessionId = $sessionData['session_id'];
-        
-        // Store session data
-        storeDynamicSessionData($invoiceId, $sessionData, $network);
-        
-        logTransaction($params['name'], [
-            'WHMCS Invoice ID' => $invoiceId,
-            'Dynamic Session ID' => $sessionId,
-            'Network' => strtoupper($network),
-            'Amount' => $params['amount'] . ' ' . $params['currency']
-        ], 'Dynamic Session Created');
-        
-        return $paymentUrl;
-    } else {
-        $errorMessage = isset($response['message']) ? $response['message'] : 'Unknown error occurred';
-        logActivity('VOLTXT Dynamic Payment Creation Failed for WHMCS Invoice #' . $invoiceId . ': ' . $errorMessage);
-        throw new Exception('Could not create payment session. Error: ' . $errorMessage);
-    }
-}
-
-/**
- * Create a traditional invoice (fallback method)
- *
- * @param array $params Payment parameters
- * @param ApiClient $apiClient API client instance
- * @return string Payment URL
- */
-function createTraditionalInvoice($params, $apiClient)
-{
-    $invoiceId = $params['invoiceid'];
-    $network = $apiClient->getNetwork();
-    
-    // Check for existing traditional invoice
-    $existingInvoice = getExistingTraditionalInvoice($invoiceId, $network, $params);
-    
-    if ($existingInvoice && !isTraditionalInvoiceExpired($existingInvoice)) {
-        // Use existing valid invoice, but ensure URL uses app domain and correct path
-        $paymentUrl = $existingInvoice['payment_url'];
-        $paymentUrl = str_replace('api.voltxt.io', 'app.voltxt.io', $paymentUrl);
-        $paymentUrl = str_replace('/invoice/', '/pay/', $paymentUrl);
-        return $paymentUrl;
-    }
-    
-    // Clear any old data
-    clearTraditionalInvoiceData($invoiceId);
-    
-    // Create new traditional invoice
-    $response = $apiClient->createInvoice($params);
-    
-    if (isset($response['success']) && $response['success']) {
-        $invoiceData = $response['invoice'];
-        $paymentUrl = $invoiceData['payment_url'];
-        $voltxtInvoiceNumber = $invoiceData['invoice_number'];
-        
-        // Store invoice data
-        storeTraditionalInvoiceData($invoiceId, $invoiceData, $network);
-        
-        logTransaction($params['name'], [
-            'WHMCS Invoice ID' => $invoiceId,
-            'VOLTXT Invoice' => $voltxtInvoiceNumber,
-            'Network' => strtoupper($network),
-            'Amount' => $params['amount'] . ' ' . $params['currency']
-        ], 'Traditional Invoice Created');
-        
-        return $paymentUrl;
-    } else {
-        $errorMessage = isset($response['message']) ? $response['message'] : 'Unknown error occurred';
-        logActivity('VOLTXT Traditional Invoice Creation Failed for WHMCS Invoice #' . $invoiceId . ': ' . $errorMessage);
-        throw new Exception('Could not create payment invoice. Error: ' . $errorMessage);
-    }
-}
-
-/**
- * Get existing dynamic payment session from WHMCS metadata
- *
- * @param int $invoiceId WHMCS invoice ID
- * @param string $network Current network (testnet/mainnet)
- * @param array $params Current gateway parameters
- * @return array|null Session data or null
- */
-function getExistingDynamicSession($invoiceId, $network, $params)
-{
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
-        
-        if (!$adminNotes) {
-            return null;
-        }
-        
-        // Extract VOLTXT dynamic session data from admin notes
-        if (preg_match('/VOLTXT_DYNAMIC:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-            $serializedData = base64_decode($matches[1]);
-            $sessionInfo = unserialize($serializedData);
+        if ($existingSession) {
+            // Check if amount matches current invoice
+            $amountMatches = abs(floatval($existingSession['amount']) - floatval($params['amount'])) < 0.01;
+            $currencyMatches = $existingSession['currency'] === $params['currency'];
             
-            if ($sessionInfo && is_array($sessionInfo)) {
-                // Check if network matches and invoice amount/currency matches
-                if (isset($sessionInfo['network']) && $sessionInfo['network'] === $network &&
-                    isset($sessionInfo['amount_fiat']) && $sessionInfo['amount_fiat'] == $params['amount'] &&
-                    isset($sessionInfo['currency']) && $sessionInfo['currency'] === $params['currency']) {
-                    return $sessionInfo;
+            if ($amountMatches && $currencyMatches) {
+                logActivity("Voltxt Gateway: Found existing session with matching amount - Session ID: " . $existingSession['session_id'], $params['invoiceid']);
+                
+                // Update callback URL in case system URL changed
+                updateSessionCallbackUrl($existingSession['session_id'], $params['systemurl'] . 'modules/gateways/callback/voltxt.php');
+                
+                // Check session status via API
+                $statusResponse = callVoltxtAPI('/api/dynamic-payment/' . $existingSession['session_id'] . '/status?api_key=' . $params['api_key'], [], 'GET');
+                
+                if ($statusResponse['success'] && $statusResponse['session']['status'] === 'pending') {
+                    // Use existing session
+                    $sessionId = $existingSession['session_id'];
+                    $frontendUrl = 'https://app.voltxt.io';
+                    $paymentUrl = $frontendUrl . '/pay-dynamic/' . $sessionId . '?source=whmcs&platform=whmcs&external_id=whmcs_' . $params['invoiceid'];
                 }
+            } else {
+                logActivity("Voltxt Gateway: Existing session found but amount/currency mismatch - creating new session", $params['invoiceid']);
             }
         }
-        
-        return null;
-        
+
+        // Create new session if no existing one found
+        if (!$sessionId) {
+            $paymentData = [
+                'api_key' => $params['api_key'],
+                'network' => $params['network'],
+                'platform' => 'whmcs',
+                'external_payment_id' => 'whmcs_' . $params['invoiceid'] . '_' . time(),
+                'amount_type' => 'fiat',
+                'amount' => floatval($params['amount']),
+                'fiat_currency' => $params['currency'],
+                'expiry_hours' => intval($params['expiry_hours']) ?: 24,
+                'description' => 'WHMCS Invoice #' . $params['invoiceid'],
+                'customer_email' => $params['clientdetails']['email'],
+                'customer_name' => trim($params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname']),
+                'callback_url' => $params['systemurl'] . 'modules/gateways/callback/voltxt.php',
+                'success_url' => $params['returnurl'] . '?voltxt_session=[session_id]&voltxt_payment=completed',
+                'cancel_url' => $params['returnurl'] . '?voltxt_session=[session_id]&voltxt_payment=cancelled',
+                'metadata' => [
+                    'invoice_id' => $params['invoiceid'],
+                    'client_id' => $params['clientdetails']['userid'],
+                    'whmcs_invoice_id' => $params['invoiceid'],
+                ],
+            ];
+
+            // Call Voltxt API
+            $response = callVoltxtAPI('/api/dynamic-payment/initiate', $paymentData);
+
+            if (!$response['success']) {
+                logActivity("Voltxt Gateway: Failed to create payment session - " . ($response['error'] ?? 'Unknown error'), $params['invoiceid']);
+                return ['error' => 'Payment initialization failed: ' . ($response['error'] ?? 'Please try again')];
+            }
+
+            $sessionData = $response['data'];
+            $sessionId = $sessionData['session_id'];
+            $paymentUrl = $sessionData['payment_url'];
+            
+            // Store session ID for webhook processing
+            storeSessionData($params['invoiceid'], $sessionId, $params);
+
+            logActivity("Voltxt Gateway: Payment session created - Session ID: " . $sessionId, $params['invoiceid']);
+        }
+
+        // Return payment form HTML with button
+        return generatePaymentForm($paymentUrl, $params, $sessionId);
+
     } catch (Exception $e) {
-        logActivity('VOLTXT: Error retrieving existing dynamic session data: ' . $e->getMessage());
-        return null;
+        logActivity("Voltxt Gateway: Error - " . $e->getMessage(), $params['invoiceid']);
+        return ['error' => 'Payment processing error'];
     }
 }
 
 /**
- * Store dynamic payment session data in WHMCS invoice metadata
- *
- * @param int $invoiceId WHMCS invoice ID
- * @param array $sessionData Session data
- * @param string $network Network used
+ * Handle return from payment page
  */
-function storeDynamicSessionData($invoiceId, $sessionData, $network)
+function voltxt_return($params)
 {
-    try {
-        $dynamicData = [
-            'session_id' => $sessionData['session_id'],
-            'payment_url' => $sessionData['payment_url'], // Store URL as returned by API
-            'status_check_url' => $sessionData['status_check_url'],
-            'network' => $network,
-            'amount_sol' => $sessionData['amount_sol'],
-            'amount_fiat' => $sessionData['amount_fiat'] ?? null,
-            'currency' => $sessionData['fiat_currency'],
-            'platform_fee_amount' => $sessionData['platform_fee_amount'],
-            'expires_at' => $sessionData['expiry_date'],
-            'deposit_address' => $sessionData['deposit_address'] ?? null,
-            'created_at' => date('Y-m-d H:i:s'),
-            'last_updated' => date('Y-m-d H:i:s'),
-        ];
+    $sessionId = $_GET['voltxt_session'] ?? '';
+    $paymentStatus = $_GET['voltxt_payment'] ?? '';
+    $txId = $_GET['voltxt_tx_id'] ?? '';
+    
+    if ($sessionId && $paymentStatus === 'completed') {
+        // Verify payment was actually processed
+        $gatewayConfig = getGatewayVariables('voltxt');
+        $statusResponse = callVoltxtAPI('/api/dynamic-payment/' . $sessionId . '/status?api_key=' . $gatewayConfig['api_key'], [], 'GET');
         
-        // Store as serialized data in admin-only notes
-        $serializedData = base64_encode(serialize($dynamicData));
-        
-        $currentAdminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly') ?: '';
-            
-        // Add dynamic session data marker
-        $dynamicDataMarker = "VOLTXT_DYNAMIC:{$serializedData}";
-        
-        // Remove any existing VOLTXT data first
-        $currentAdminNotes = preg_replace('/VOLTXT_DYNAMIC:[A-Za-z0-9+\/=]+/', '', $currentAdminNotes);
-        $currentAdminNotes = preg_replace('/VOLTXT_DATA:[A-Za-z0-9+\/=]+/', '', $currentAdminNotes);
-        
-        // Add new dynamic session data
-        $newAdminNotes = trim($currentAdminNotes . "\n" . $dynamicDataMarker);
-        
-        Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->update(['adminonly' => $newAdminNotes]);
-            
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error storing dynamic session data: ' . $e->getMessage());
-    }
-}
-
-/**
- * Check if dynamic payment session has expired
- *
- * @param array $sessionData Session data
- * @return bool True if expired
- */
-function isDynamicSessionExpired($sessionData)
-{
-    if (!isset($sessionData['expires_at']) || !$sessionData['expires_at']) {
-        return false;
+        if ($statusResponse['success'] && in_array($statusResponse['session']['status'], ['completed', 'paid', 'auto_processed'])) {
+            // Payment completed, redirect with success
+            $successUrl = $params['returnurl'];
+            $successUrl .= (strpos($successUrl, '?') === false ? '?' : '&') . 'paymentsuccess=true';
+            if ($txId) {
+                $successUrl .= '&txid=' . urlencode($txId);
+            }
+            header('Location: ' . $successUrl);
+            exit;
+        }
     }
     
-    try {
-        $expiryTime = strtotime($sessionData['expires_at']);
-        return $expiryTime < time();
-    } catch (Exception $e) {
-        return false;
-    }
+    // Redirect back to invoice
+    header('Location: ' . $params['returnurl']);
+    exit;
 }
 
 /**
- * Clear dynamic payment session data from WHMCS metadata
- *
- * @param int $invoiceId WHMCS invoice ID
+ * Generate payment form with Solana pay button
  */
-function clearDynamicSessionData($invoiceId)
+function generatePaymentForm($paymentUrl, $params, $sessionId)
 {
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
+    $invoiceAmount = VoltxtHelper::formatAmount($params['amount'], $params['currency']);
+    
+    $html = '
+    <div class="voltxt-payment-form" style="max-width: 500px; margin: 20px auto; padding: 25px; border: 2px solid #e1e5e9; border-radius: 12px; background: #ffffff; text-align: center; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, sans-serif;">
+        <div class="voltxt-header" style="margin-bottom: 20px;">
+            <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMjAiIGZpbGw9IiM5OTQ1RkYiLz4KPHN2ZyB4PSI4IiB5PSI4IiB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzAwRkZBMyI+CjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMlM2LjQ4IDIyIDEyIDIyIDIyIDE3LjUyIDIyIDEyUzE3LjUyIDIgMTIgMloiLz4KPC9zdmc+Cjwvc3ZnPgo=" alt="Solana" style="width: 40px; height: 40px; margin-bottom: 15px;">
+            <h3 style="margin: 0 0 10px 0; color: #2c3e50; font-size: 22px; font-weight: 600;">Pay with Solana</h3>
+            <p style="margin: 0; color: #6c757d; font-size: 14px;">Fast, secure cryptocurrency payment</p>
+        </div>
         
-        if ($adminNotes) {
-            // Remove VOLTXT dynamic session data from admin notes
-            $cleanedNotes = preg_replace('/VOLTXT_DYNAMIC:[A-Za-z0-9+\/=]+/', '', $adminNotes);
-            $cleanedNotes = trim($cleanedNotes);
-            
-            // Update admin notes
-            Capsule::table('tblinvoices')
-                ->where('id', $invoiceId)
-                ->update(['adminonly' => $cleanedNotes]);
-        }
+        <div class="payment-amount" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin: 20px 0;">
+            <div style="font-size: 24px; font-weight: bold;">' . htmlspecialchars($invoiceAmount) . ' ' . htmlspecialchars($params['currency']) . '</div>
+            <div style="font-size: 14px; opacity: 0.9; margin-top: 5px;">Invoice #' . htmlspecialchars($params['invoiceid']) . '</div>
+        </div>
         
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error clearing dynamic session data: ' . $e->getMessage());
-    }
-}
-
-/**
- * Update dynamic payment session data in WHMCS metadata
- *
- * @param int $invoiceId WHMCS invoice ID
- * @param array $updateData Data to update
- */
-function updateDynamicSessionData($invoiceId, $updateData)
-{
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
+        <div class="payment-info" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; color: #6c757d;">
+            <p style="margin: 0 0 8px 0;"><strong>Network:</strong> ' . ucfirst($params['network']) . '</p>
+            <p style="margin: 0;"><strong>Payment expires in:</strong> ' . ($params['expiry_hours'] ?: 24) . ' hours</p>
+        </div>
         
-        if ($adminNotes && preg_match('/VOLTXT_DYNAMIC:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-            $serializedData = base64_decode($matches[1]);
-            $sessionData = unserialize($serializedData);
-            
-            if ($sessionData && is_array($sessionData)) {
-                // Merge update data
-                $sessionData = array_merge($sessionData, $updateData);
-                $sessionData['last_updated'] = date('Y-m-d H:i:s');
-                
-                // Re-serialize and update
-                $newSerializedData = base64_encode(serialize($sessionData));
-                $newAdminNotes = preg_replace('/VOLTXT_DYNAMIC:[A-Za-z0-9+\/=]+/', "VOLTXT_DYNAMIC:{$newSerializedData}", $adminNotes);
-                
-                Capsule::table('tblinvoices')
-                    ->where('id', $invoiceId)
-                    ->update(['adminonly' => $newAdminNotes]);
-            }
-        }
+        <div class="payment-actions" style="margin: 25px 0;">
+            <a href="' . htmlspecialchars($paymentUrl) . '" 
+               class="voltxt-pay-btn" 
+               style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; transition: transform 0.2s ease; border: none; cursor: pointer;"
+               onmouseover="this.style.transform=\'translateY(-2px)\'"
+               onmouseout="this.style.transform=\'translateY(0px)\'">
+                Pay with Solana Wallet
+            </a>
+        </div>
         
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error updating dynamic session data: ' . $e->getMessage());
-    }
-}
-
-// Legacy functions for traditional invoice support
-function getExistingTraditionalInvoice($invoiceId, $network, $params)
-{
-    // Implementation for backward compatibility
-    return getExistingVoltxtInvoice($invoiceId, $network, $params);
-}
-
-function storeTraditionalInvoiceData($invoiceId, $invoiceData, $network)
-{
-    // Implementation for backward compatibility
-    return storeVoltxtInvoiceData($invoiceId, $invoiceData, $network);
-}
-
-function isTraditionalInvoiceExpired($invoiceData)
-{
-    // Implementation for backward compatibility
-    return isVoltxtInvoiceExpired($invoiceData);
-}
-
-function clearTraditionalInvoiceData($invoiceId)
-{
-    // Implementation for backward compatibility
-    return clearVoltxtInvoiceData($invoiceId);
-}
-
-// Keep existing legacy functions for backward compatibility
-function getExistingVoltxtInvoice($invoiceId, $network, $params)
-{
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
-        
-        if (!$adminNotes) {
-            return null;
-        }
-        
-        if (preg_match('/VOLTXT_DATA:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-            $serializedData = base64_decode($matches[1]);
-            $voltxtInfo = unserialize($serializedData);
-            
-            if ($voltxtInfo && is_array($voltxtInfo)) {
-                if (isset($voltxtInfo['network']) && $voltxtInfo['network'] === $network &&
-                    isset($voltxtInfo['amount_fiat']) && $voltxtInfo['amount_fiat'] == $params['amount'] &&
-                    isset($voltxtInfo['currency']) && $voltxtInfo['currency'] === $params['currency']) {
-                    return $voltxtInfo;
+        <div class="payment-security" style="font-size: 12px; color: #6c757d; margin-top: 20px;">
+            <p style="margin: 0;">🔒 Secure payment powered by Voltxt</p>
+            <p style="margin: 5px 0 0 0;">You will be redirected to complete your payment</p>
+        </div>
+    </div>
+    
+    <script>
+    // Auto-refresh to check payment status
+    var voltxtSessionId = "' . htmlspecialchars($sessionId) . '";
+    var voltxtCheckInterval = setInterval(function() {
+        fetch("modules/gateways/callback/voltxt.php?session_id=" + encodeURIComponent(voltxtSessionId))
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.session && data.session.status === "completed") {
+                    clearInterval(voltxtCheckInterval);
+                    window.location.reload();
                 }
-            }
-        }
-        
-        return null;
-        
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error retrieving existing invoice data: ' . $e->getMessage());
-        return null;
-    }
-}
-
-function storeVoltxtInvoiceData($invoiceId, $invoiceData, $network)
-{
-    try {
-        $voltxtData = [
-            'voltxt_invoice_number' => $invoiceData['invoice_number'],
-            'payment_url' => $invoiceData['payment_url'],
-            'network' => $network,
-            'status' => $invoiceData['status'] ?? 'pending',
-            'amount_fiat' => $invoiceData['amount_fiat'],
-            'currency' => $invoiceData['fiat_currency'],
-            'amount_crypto' => $invoiceData['amount_crypto'] ?? null,
-            'expires_at' => $invoiceData['expiry_date'] ?? null,
-            'created_at' => date('Y-m-d H:i:s'),
-            'last_updated' => date('Y-m-d H:i:s'),
-        ];
-        
-        // Ensure payment URL uses app domain and correct path
-        if (isset($voltxtData['payment_url'])) {
-            $voltxtData['payment_url'] = str_replace('api.voltxt.io', 'app.voltxt.io', $voltxtData['payment_url']);
-            $voltxtData['payment_url'] = str_replace('/invoice/', '/pay/', $voltxtData['payment_url']);
-        }
-        
-        $serializedData = base64_encode(serialize($voltxtData));
-        
-        $currentAdminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly') ?: '';
-            
-        $voltxtDataMarker = "VOLTXT_DATA:{$serializedData}";
-        
-        $currentAdminNotes = preg_replace('/VOLTXT_DATA:[A-Za-z0-9+\/=]+/', '', $currentAdminNotes);
-        
-        $newAdminNotes = trim($currentAdminNotes . "\n" . $voltxtDataMarker);
-        
-        Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->update(['adminonly' => $newAdminNotes]);
-            
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error storing invoice data: ' . $e->getMessage());
-    }
-}
-
-function isVoltxtInvoiceExpired($voltxtData)
-{
-    if (!isset($voltxtData['expires_at']) || !$voltxtData['expires_at']) {
-        return false;
-    }
+            })
+            .catch(error => console.log("Status check error:", error));
+    }, 10000); // Check every 10 seconds
     
-    try {
-        $expiryTime = strtotime($voltxtData['expires_at']);
-        return $expiryTime < time();
-    } catch (Exception $e) {
-        return false;
-    }
+    // Stop checking after 2 hours
+    setTimeout(function() {
+        clearInterval(voltxtCheckInterval);
+    }, 7200000);
+    </script>';
+
+    return $html;
 }
 
-function clearVoltxtInvoiceData($invoiceId)
+/**
+ * Call Voltxt API
+ */
+function callVoltxtAPI($endpoint, $data, $method = 'POST')
 {
-    try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
-        
-        if ($adminNotes) {
-            $cleanedNotes = preg_replace('/VOLTXT_DATA:[A-Za-z0-9+\/=]+/', '', $adminNotes);
-            $cleanedNotes = trim($cleanedNotes);
-            
-            Capsule::table('tblinvoices')
-                ->where('id', $invoiceId)
-                ->update(['adminonly' => $cleanedNotes]);
-        }
-        
-    } catch (Exception $e) {
-        logActivity('VOLTXT: Error clearing invoice data: ' . $e->getMessage());
+    $url = 'https://api.voltxt.io' . $endpoint;
+    
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'User-Agent: WHMCS-Voltxt/1.0',
+        ],
+    ]);
+
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    } elseif ($method === 'GET' && !empty($data)) {
+        $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($data);
+        curl_setopt($ch, CURLOPT_URL, $url);
     }
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        return ['success' => false, 'error' => 'Network error: ' . $error];
+    }
+
+    $decoded = json_decode($response, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return ['success' => false, 'error' => 'Invalid API response'];
+    }
+
+    return $decoded;
 }
 
-function updateVoltxtInvoiceData($invoiceId, $updateData)
+/**
+ * Get existing active session for invoice
+ */
+function getExistingActiveSession($invoiceId)
 {
     try {
-        $adminNotes = Capsule::table('tblinvoices')
-            ->where('id', $invoiceId)
-            ->value('adminonly');
+        global $db_host, $db_name, $db_username, $db_password;
         
-        if ($adminNotes && preg_match('/VOLTXT_DATA:([A-Za-z0-9+\/=]+)/', $adminNotes, $matches)) {
-            $serializedData = base64_decode($matches[1]);
-            $voltxtData = unserialize($serializedData);
-            
-            if ($voltxtData && is_array($voltxtData)) {
-                $voltxtData = array_merge($voltxtData, $updateData);
-                $voltxtData['last_updated'] = date('Y-m-d H:i:s');
-                
-                $newSerializedData = base64_encode(serialize($voltxtData));
-                $newAdminNotes = preg_replace('/VOLTXT_DATA:[A-Za-z0-9+\/=]+/', "VOLTXT_DATA:{$newSerializedData}", $adminNotes);
-                
-                Capsule::table('tblinvoices')
-                    ->where('id', $invoiceId)
-                    ->update(['adminonly' => $newAdminNotes]);
-            }
-        }
+        $pdo = new PDO("mysql:host={$db_host};dbname={$db_name}", $db_username, $db_password);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        $stmt = $pdo->prepare("
+            SELECT * FROM mod_voltxt_sessions 
+            WHERE invoice_id = ? 
+            AND status IN ('pending', 'payment_received') 
+            AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ");
+        
+        $stmt->execute([$invoiceId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
         
     } catch (Exception $e) {
-        logActivity('VOLTXT: Error updating invoice data: ' . $e->getMessage());
+        error_log("Voltxt: Error checking existing session - " . $e->getMessage());
+        return null;
     }
 }
 
 /**
- * Handle refund requests.
- *
- * @param array $params Payment gateway parameters.
- * @return array The result of the refund attempt.
+ * Simple helper class for formatting
+ */
+class VoltxtHelper
+{
+    public static function formatAmount($amount, $currency = 'USD')
+    {
+        $decimals = ($currency === 'SOL') ? 9 : 2;
+        return number_format($amount, $decimals);
+    }
+}
+
+/**
+ * Update callback URL for existing session
+ */
+function updateSessionCallbackUrl($sessionId, $callbackUrl)
+{
+    try {
+        global $db_host, $db_name, $db_username, $db_password;
+        
+        $pdo = new PDO("mysql:host={$db_host};dbname={$db_name}", $db_username, $db_password);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        // For now, just log it - the callback URL is stored in the backend session
+        error_log("Voltxt: Updated callback URL for session {$sessionId}: {$callbackUrl}");
+        
+    } catch (Exception $e) {
+        error_log("Voltxt: Error updating callback URL - " . $e->getMessage());
+    }
+}
+
+/**
+ * Store session data for webhook processing
+ */
+function storeSessionData($invoiceId, $sessionId, $params)
+{
+    try {
+        // Use WHMCS database configuration
+        global $db_host, $db_name, $db_username, $db_password;
+        
+        $pdo = new PDO("mysql:host={$db_host};dbname={$db_name}", $db_username, $db_password);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        // Create table if not exists
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS mod_voltxt_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                invoice_id INT NOT NULL,
+                session_id VARCHAR(255) NOT NULL,
+                api_key VARCHAR(32) NOT NULL,
+                network VARCHAR(20) NOT NULL,
+                amount DECIMAL(15,8) NOT NULL,
+                currency VARCHAR(3) NOT NULL,
+                status VARCHAR(50) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_invoice (invoice_id),
+                KEY idx_session_id (session_id)
+            )
+        ");
+
+        $stmt = $pdo->prepare("
+            INSERT INTO mod_voltxt_sessions 
+            (invoice_id, session_id, api_key, network, amount, currency) 
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+            session_id = VALUES(session_id),
+            updated_at = CURRENT_TIMESTAMP
+        ");
+
+        $stmt->execute([
+            $invoiceId,
+            $sessionId,
+            $params['api_key'],
+            $params['network'],
+            $params['amount'],
+            $params['currency']
+        ]);
+
+    } catch (Exception $e) {
+        error_log("Voltxt: Failed to store session data - " . $e->getMessage());
+    }
+}
+
+/**
+ * Refund processing (manual)
  */
 function voltxt_refund($params)
 {
-    logTransaction($params['name'], [
-        'Transaction ID' => $params['transid'],
-        'Refund Amount' => $params['amount'],
-        'Currency' => $params['currency'],
-        'Reason' => 'Manual refund requested'
-    ], 'Refund Request');
-
+    logActivity("Voltxt Gateway: Refund requested for transaction " . $params['transid'], $params['invoiceid']);
+    
     return [
         'status' => 'error',
-        'rawdata' => 'Cryptocurrency refunds must be processed manually. Please send the refund directly from your crypto wallet to the customer and record the transaction details here.',
-        'transid' => $params['transid'],
+        'rawdata' => 'Solana payments require manual refund processing. Please contact support.',
     ];
 }
 
 /**
- * Capture a previously authorized transaction.
- * (Not applicable for crypto payments)
- *
- * @param array $params Payment gateway parameters.
- * @return array The result of the capture attempt.
+ * Capture (automatic for Solana)
  */
 function voltxt_capture($params)
 {
     return [
-        'status' => 'error',
-        'rawdata' => 'Capture is not supported for cryptocurrency payments.',
-    ];
-}
-
-/**
- * Void a transaction.
- * (Not applicable for crypto payments)
- *
- * @param array $params Payment gateway parameters.
- * @return array The result of the void attempt.
- */
-function voltxt_void($params)
-{
-    return [
-        'status' => 'error',
-        'rawdata' => 'Void is not supported for cryptocurrency payments.',
+        'status' => 'success',
+        'transid' => $params['transid'],
+        'rawdata' => 'Solana payments are automatically captured',
     ];
 }
